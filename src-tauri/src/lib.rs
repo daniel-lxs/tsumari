@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use crate::models::Session;
 use anyhow::Result;
 use tauri::State;
 use tokio::sync::Mutex;
-use crate::models::Session;
 
 pub mod models;
 
@@ -69,6 +69,27 @@ async fn get_memory_usage(state: State<'_, SharedSession>) -> Result<String, Str
 }
 
 #[tauri::command]
+async fn get_disk_usage(state: State<'_, SharedSession>) -> Result<Vec<String>, String> {
+    let mut session_guard = state.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "SSH session not connected".to_string())?;
+
+    let output = session
+        .send_command("df -h / --output=size,used,pcent | awk 'NR==2 { printf \"%s,%s,%s\", $2, $1, $3 }' | tr -d 'G%'") //Used and total disk space
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Tidy up the output on a tuple
+    let output = output
+        .split(",")
+        .map(|s| s.trim().to_string())
+        .collect::<Vec<String>>();
+
+    Ok(output)
+}
+
+#[tauri::command]
 async fn disconnect_ssh(state: State<'_, SharedSession>) -> Result<String, String> {
     let mut session_guard = state.lock().await;
     if let Some(mut session) = session_guard.take() {
@@ -87,6 +108,7 @@ pub fn run() {
             execute_command,
             get_cpu_usage,
             get_memory_usage,
+            get_disk_usage,
             disconnect_ssh
         ])
         .run(tauri::generate_context!())
