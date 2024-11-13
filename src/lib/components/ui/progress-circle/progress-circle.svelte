@@ -7,7 +7,7 @@
   let className: $$Props['class'] = undefined;
   export let max: $$Props['max'] = 100;
   export let value: $$Props['value'] = undefined;
-  export let size: number = 120; // Size of the circle in pixels
+  export let size: number = 160; // Size of the circle in pixels
   export let strokeWidth: number = 8; // Width of the progress bar
   export { className as class };
 

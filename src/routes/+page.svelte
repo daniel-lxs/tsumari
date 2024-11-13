@@ -13,7 +13,7 @@
   });
 
   let cpuUsage = $state(0);
-  let memoryUsage = $state(0);
+  let memoryUsage = $state<string[]>(['0', '0', '0']);
   let diskUsage = $state<string[]>(['0', '0', '0']);
 
   async function connectSSH() {
@@ -38,6 +38,9 @@
     try {
       const response = await invoke('disconnect_ssh');
       isConnected = false;
+      cpuUsage = 0;
+      memoryUsage = ['0', '0', '0'];
+      diskUsage = ['0', '0', '0'];
       console.log(response);
     } catch (error) {
       console.error('SSH disconnection failed:', error);
@@ -52,7 +55,7 @@
     while (isConnected) {
       // Only run loop if connected
       try {
-        memoryUsage = Number(await invoke<string>('get_memory_usage'));
+        memoryUsage = await invoke<string[]>('get_memory_usage');
         cpuUsage = Number(await invoke<string>('get_cpu_usage'));
 
         retryCount = 0; // Reset retry count on success
@@ -116,14 +119,27 @@
             ><ProgressCircle value={cpuUsage} max={100} /></SimpleCard
           >
           <SimpleCard title="Memory"
-            ><ProgressCircle value={memoryUsage} max={100} /></SimpleCard
+            ><ProgressCircle value={Number(memoryUsage[2])} max={100}>
+              <div class="flex flex-col items-center">
+                <span class="text-xs text-muted-foreground">Used</span>
+
+                <span class="text-sm border-b">{memoryUsage[0]} GiB</span>
+
+                <span class="text-sm border-t">{memoryUsage[1]} GiB</span>
+
+                <span class="text-xs text-muted-foreground">Total</span>
+              </div>
+            </ProgressCircle></SimpleCard
           >
           <SimpleCard title="Storage"
             ><ProgressCircle value={Number(diskUsage[2])} max={100}>
-              <div class="flex flex-col gap-2">
-                <span class="text-xs">Used: {diskUsage[0]}GiB</span>
-                <hr />
-                <span class="text-xs">Total: {diskUsage[1]}GiB</span>
+              <div class="flex flex-col items-center">
+                <span class="text-xs text-muted-foreground">Used space</span>
+
+                <span class="text-sm">{diskUsage[0]} GiB</span>
+                <span class="text-sm border-t">{diskUsage[1]} GiB</span>
+
+                <span class="text-xs text-muted-foreground">Total space</span>
               </div>
             </ProgressCircle>
           </SimpleCard>
