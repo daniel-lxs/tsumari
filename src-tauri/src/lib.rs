@@ -1,5 +1,6 @@
 use crate::models::client::{Session, ShellChannel};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::Mutex;
 
@@ -7,6 +8,42 @@ pub mod models;
 
 type SharedSession = Mutex<Option<Session>>;
 type SharedChannel = Mutex<Option<ShellChannel>>;
+
+#[derive(Deserialize)]
+pub enum ProcessSort {
+    #[serde(rename = "cpu")]
+    Cpu,
+    #[serde(rename = "ram")]
+    Ram,
+}
+
+#[derive(Serialize)]
+pub struct SystemInfo {
+    cpu_usage: f32,
+    memory: MemoryInfo,
+    processes: Vec<ProcessInfo>,
+}
+
+#[derive(Serialize)]
+pub struct MemoryInfo {
+    used: f32,
+    total: f32,
+    percentage: f32,
+}
+
+#[derive(Serialize)]
+pub struct ProcessInfo {
+    name: String,
+    cpu: f32,
+    memory: f32,
+}
+
+#[derive(Serialize)]
+pub struct StorageInfo {
+    used: f32,
+    total: f32,
+    percentage: f32,
+}
 
 #[tauri::command]
 async fn connect_ssh(
@@ -60,39 +97,101 @@ async fn execute_command(
 }
 
 #[tauri::command]
-async fn get_cpu_usage(state: State<'_, SharedChannel>) -> Result<String, String> {
+async fn get_system_info(
+    sort_by: ProcessSort,
+    state: State<'_, SharedChannel>
+) -> Result<SystemInfo, String> {
     let mut channel_guard = state.lock().await;
     let channel = channel_guard
         .as_mut()
         .ok_or_else(|| "SSH session not connected".to_string())?;
 
-    execute_ssh_command(channel, "top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'").await
-}
-
-#[tauri::command]
-async fn get_memory_usage(state: State<'_, SharedChannel>) -> Result<Vec<String>, String> {
-    let mut channel_guard = state.lock().await;
-    let channel = channel_guard
-        .as_mut()
-        .ok_or_else(|| "SSH session not connected".to_string())?;
-
+    // Get system info using top in batch mode with a better formatted output
     let output = execute_ssh_command(
         channel,
-        "free -g | awk 'NR==2{printf  \"%s,%s,%.0f\", $3,$2,$3*100/$2 }'",
+        &format!(
+            r#"top -bn1 -w 150 -o {} | awk '
+                /Cpu/ {{
+                    cpu=$2+$4
+                    print "CPU " cpu
+                }}
+                /MiB Mem :/ {{
+                    total=$4
+                    free=$6
+                    used=$8
+                    print "MEM " total " " used " " free
+                }}
+                NR>7 && NR<18 {{
+                    print "PROC " $12 " " $9 " " $10
+                }}'"#,
+            match sort_by {
+                ProcessSort::Cpu => "%CPU",
+                ProcessSort::Ram => "%MEM",
+            }
+        ),
     )
     .await?;
 
-    // Tidy up the output on a tuple
-    let output = output
-        .split(",")
-        .map(|s| s.trim().to_string())
-        .collect::<Vec<String>>();
+    let mut cpu_usage = 0.0;
+    let mut mem_total = 0.0;
+    let mut mem_used = 0.0;
+    let mut processes = Vec::new();
 
-    Ok(output)
+    // Parse the output line by line
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        match parts.get(0) {
+            Some(&"CPU") => {
+                if let Some(value) = parts.get(1).and_then(|v| v.parse().ok()) {
+                    cpu_usage = value;
+                }
+            }
+            Some(&"MEM") => {
+                if let (Some(total), Some(used)) = (
+                    parts.get(1).and_then(|v| v.parse::<f32>().ok()),
+                    parts.get(2).and_then(|v| v.parse::<f32>().ok())
+                ) {
+                    mem_total = total;
+                    mem_used = used;
+                }
+            }
+            Some(&"PROC") => {
+                if let (Some(name), Some(cpu), Some(mem)) = (
+                    parts.get(1),
+                    parts.get(2).and_then(|v| v.parse().ok()),
+                    parts.get(3).and_then(|v| v.parse().ok())
+                ) {
+                    processes.push(ProcessInfo {
+                        name: name.to_string(),
+                        cpu,
+                        memory: mem,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Calculate memory percentage
+    let mem_percentage = if mem_total > 0.0 {
+        (mem_used / mem_total) * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(SystemInfo {
+        cpu_usage,
+        memory: MemoryInfo {
+            used: mem_used / 1024.0,  // Convert to GB
+            total: mem_total / 1024.0, // Convert to GB
+            percentage: mem_percentage,
+        },
+        processes,
+    })
 }
 
 #[tauri::command]
-async fn get_disk_usage(state: State<'_, SharedChannel>) -> Result<Vec<String>, String> {
+async fn get_disk_usage(state: State<'_, SharedChannel>) -> Result<StorageInfo, String> {
     let mut channel_guard = state.lock().await;
     let channel = channel_guard
         .as_mut()
@@ -104,13 +203,22 @@ async fn get_disk_usage(state: State<'_, SharedChannel>) -> Result<Vec<String>, 
     )
     .await?;
 
-    // Tidy up the output on a tuple
-    let output = output
-        .split(",")
-        .map(|s| s.trim().to_string())
-        .collect::<Vec<String>>();
+    let mut values = output.split(',');
+    let used = values.next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let total = values.next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let percentage = values.next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
 
-    Ok(output)
+    Ok(StorageInfo {
+        used,
+        total,
+        percentage,
+    })
 }
 
 #[tauri::command]
@@ -131,8 +239,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             connect_ssh,
             execute_command,
-            get_cpu_usage,
-            get_memory_usage,
+            get_system_info,
             get_disk_usage,
             disconnect_ssh
         ])
