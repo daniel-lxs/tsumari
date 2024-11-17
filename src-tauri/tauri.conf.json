@@ -14,7 +14,9 @@
       {
         "title": "tsumari",
         "width": 800,
-        "height": 600
+        "height": 900,
+        "minHeight": 600,
+        "minWidth": 600
       }
     ],
     "security": {
